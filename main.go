@@ -119,17 +119,17 @@ func (c *graphiteCollector) processLine(line string) {
 	log.Debugf("Incoming line : %s", line)
 
 	// Metric path may contain spaces
-	lineRxp, _ := regexp.Compile(`(.*) ([^ ]*) ([^ ]*)`)
-	parts := lineRxp.FindStringSubmatch(line)
+	lineRegex := regexp.MustCompile(`(.+) ([^ ]+) ([^ ]+)`)
+	parts := lineRegex.FindStringSubmatch(line)
 	if (len(parts) - 1) != 3 {
 		log.Infof("Invalid part count of %d in line: %s", len(parts), line)
 		return
 	}
 
 	parts = parts[1:]
+	log.Infof("Parts: '%s', '%s', '%s'", parts[0], parts[1], parts[2])
 
-	// Only replace spaces here, invalid chars are replaced later
-	originalName := strings.Replace(parts[0], " ", "_", -1)
+	originalName := parts[0]
 
 	var name string
 	mapping, labels, present := c.mapper.GetMapping(originalName, mapper.MetricTypeGauge)
@@ -149,6 +149,10 @@ func (c *graphiteCollector) processLine(line string) {
 		log.Infof("Invalid value in line: %s", line)
 		return
 	}
+
+	log.Infof("Value: %f", value)
+
+
 	timestamp, err := strconv.ParseFloat(parts[2], 64)
 	if err != nil {
 		log.Infof("Invalid timestamp in line: %s", line)
@@ -163,7 +167,7 @@ func (c *graphiteCollector) processLine(line string) {
 		Help:         fmt.Sprintf("Graphite metric %s", name),
 		Timestamp:    time.Unix(int64(timestamp), int64(math.Mod(timestamp, 1.0)*1e9)),
 	}
-	log.Debugf("Sample: %+v", sample)
+	log.Infof("Sample: %+v", sample)
 	lastProcessed.Set(float64(time.Now().UnixNano()) / 1e9)
 	c.sampleCh <- &sample
 }
