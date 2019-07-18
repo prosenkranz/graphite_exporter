@@ -127,8 +127,6 @@ func (c *graphiteCollector) processLine(line string) {
 	}
 
 	parts = parts[1:]
-	log.Infof("Parts: '%s', '%s', '%s'", parts[0], parts[1], parts[2])
-
 	originalName := parts[0]
 
 	var name string
@@ -149,10 +147,6 @@ func (c *graphiteCollector) processLine(line string) {
 		log.Infof("Invalid value in line: %s", line)
 		return
 	}
-
-	log.Infof("Value: %f", value)
-
-
 	timestamp, err := strconv.ParseFloat(parts[2], 64)
 	if err != nil {
 		log.Infof("Invalid timestamp in line: %s", line)
@@ -167,7 +161,7 @@ func (c *graphiteCollector) processLine(line string) {
 		Help:         fmt.Sprintf("Graphite metric %s", name),
 		Timestamp:    time.Unix(int64(timestamp), int64(math.Mod(timestamp, 1.0)*1e9)),
 	}
-	log.Infof("Sample: %+v", sample)
+	log.Debugf("Sample: %+v", sample)
 	lastProcessed.Set(float64(time.Now().UnixNano()) / 1e9)
 	c.sampleCh <- &sample
 }

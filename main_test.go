@@ -21,7 +21,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/statsd_exporter/pkg/mapper"
 	"github.com/stretchr/testify/assert"
-	"github.com/prometheus/common/log"
 )
 
 type mockMapper struct {
@@ -48,7 +47,6 @@ func TestProcessLine(t *testing.T) {
 	type testCase struct {
 		line     string
 		name     string
-		originalName string
 		labels   map[string]string
 		value    float64
 		present  bool
@@ -150,7 +148,6 @@ func TestProcessLine(t *testing.T) {
 		parts := lineRegex.FindStringSubmatch(strings.TrimSpace(k.line))
 		if len(parts) > 0 {
 			originalName := parts[1]
-			log.Infof("originalName: '%s'", originalName)
 			sample = c.samples[originalName]
 		} else {
 			sample = nil
