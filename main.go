@@ -117,12 +117,18 @@ func (c *graphiteCollector) processLines() {
 func (c *graphiteCollector) processLine(line string) {
 	line = strings.TrimSpace(line)
 	log.Debugf("Incoming line : %s", line)
-	parts := strings.Split(line, " ")
+
+	// Metric path may contain spaces
+	lineRxp, _ := regexp.Compile(`(.*) ([^ ]*) ([^ ]*)`)
+	parts := lineRxp.FindStringSubmatch(line)
 	if len(parts) != 3 {
 		log.Infof("Invalid part count of %d in line: %s", len(parts), line)
 		return
 	}
-	originalName := parts[0]
+
+	// Only replace spaces here, invalid chars are replaced later
+	originalName := strings.Replace(parts[0], " ", "_", -1)
+
 	var name string
 	mapping, labels, present := c.mapper.GetMapping(originalName, mapper.MetricTypeGauge)
 
