@@ -121,10 +121,12 @@ func (c *graphiteCollector) processLine(line string) {
 	// Metric path may contain spaces
 	lineRxp, _ := regexp.Compile(`(.*) ([^ ]*) ([^ ]*)`)
 	parts := lineRxp.FindStringSubmatch(line)
-	if len(parts) != 3 {
+	if (len(parts) - 1) != 3 {
 		log.Infof("Invalid part count of %d in line: %s", len(parts), line)
 		return
 	}
+
+	parts = parts[1:]
 
 	// Only replace spaces here, invalid chars are replaced later
 	originalName := strings.Replace(parts[0], " ", "_", -1)
