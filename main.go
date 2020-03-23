@@ -29,9 +29,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-kit/kit/log"
+	"github.com/go-kit/kit/log/level"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/prometheus/common/log"
+	"github.com/prometheus/common/promlog"
+	"github.com/prometheus/common/promlog/flag"
 	"github.com/prometheus/common/version"
 	"github.com/prometheus/statsd_exporter/pkg/mapper"
 	"gopkg.in/alecthomas/kingpin.v2"
@@ -44,6 +47,7 @@ var (
 	mappingConfig   = kingpin.Flag("graphite.mapping-config", "Metric mapping configuration file name.").Default("").String()
 	sampleExpiry    = kingpin.Flag("graphite.sample-expiry", "How long a sample is valid for.").Default("5m").Duration()
 	strictMatch     = kingpin.Flag("graphite.mapping-strict-match", "Only store metrics that match the mapping configuration.").Bool()
+	cacheSize       = kingpin.Flag("graphite.cache-size", "Maximum size of your metric mapping cache. Relies on least recently used replacement policy if max size is reached.").Default("1000").Int()
 	dumpFSMPath     = kingpin.Flag("debug.dump-fsm", "The path to dump internal FSM generated for glob matching as Dot file.").Default("").String()
 
 	lastProcessed = prometheus.NewGauge(
@@ -71,9 +75,14 @@ type graphiteSample struct {
 	Timestamp    time.Time
 }
 
+func (s graphiteSample) String() string {
+	return fmt.Sprintf("%#v", s)
+}
+
 type metricMapper interface {
 	GetMapping(string, mapper.MetricType) (*mapper.MetricMapping, prometheus.Labels, bool)
-	InitFromFile(string) error
+	InitFromFile(string, int) error
+	InitCache(cacheSize int)
 }
 
 type graphiteCollector struct {
@@ -83,15 +92,17 @@ type graphiteCollector struct {
 	sampleCh    chan *graphiteSample
 	lineCh      chan string
 	strictMatch bool
+	logger      log.Logger
 }
 
-func newGraphiteCollector() *graphiteCollector {
+func newGraphiteCollector(logger log.Logger) *graphiteCollector {
 	c := &graphiteCollector{
 		sampleCh:    make(chan *graphiteSample),
 		lineCh:      make(chan string),
 		mu:          &sync.Mutex{},
 		samples:     map[string]*graphiteSample{},
 		strictMatch: *strictMatch,
+		logger:      logger,
 	}
 	go c.processSamples()
 	go c.processLines()
@@ -116,13 +127,13 @@ func (c *graphiteCollector) processLines() {
 
 func (c *graphiteCollector) processLine(line string) {
 	line = strings.TrimSpace(line)
-	log.Debugf("Incoming line : %s", line)
+	level.Debug(c.logger).Log("msg", "Incoming line", "line", line)
 
 	// Metric path may contain spaces
 	lineRegex := regexp.MustCompile(`(.+) ([^ ]+) ([^ ]+)`)
 	parts := lineRegex.FindStringSubmatch(line)
 	if (len(parts) - 1) != 3 {
-		log.Infof("Invalid part count of %d in line: %s", len(parts), line)
+		level.Info(c.logger).Log("msg", "Invalid part count", "parts", len(parts), "line", line)
 		return
 	}
 
@@ -144,12 +155,12 @@ func (c *graphiteCollector) processLine(line string) {
 
 	value, err := strconv.ParseFloat(parts[1], 64)
 	if err != nil {
-		log.Infof("Invalid value in line: %s", line)
+		level.Info(c.logger).Log("msg", "Invalid value", "line", line)
 		return
 	}
 	timestamp, err := strconv.ParseFloat(parts[2], 64)
 	if err != nil {
-		log.Infof("Invalid timestamp in line: %s", line)
+		level.Info(c.logger).Log("msg", "Invalid timestamp", "line", line)
 		return
 	}
 	sample := graphiteSample{
@@ -161,7 +172,7 @@ func (c *graphiteCollector) processLine(line string) {
 		Help:         fmt.Sprintf("Graphite metric %s", name),
 		Timestamp:    time.Unix(int64(timestamp), int64(math.Mod(timestamp, 1.0)*1e9)),
 	}
-	log.Debugf("Sample: %+v", sample)
+	level.Debug(c.logger).Log("msg", "Processing sample", "sample", sample)
 	lastProcessed.Set(float64(time.Now().UnixNano()) / 1e9)
 	c.sampleCh <- &sample
 }
@@ -225,60 +236,70 @@ func init() {
 	prometheus.MustRegister(version.NewCollector("graphite_exporter"))
 }
 
-func dumpFSM(mapper *mapper.MetricMapper, dumpFilename string) error {
+func dumpFSM(mapper *mapper.MetricMapper, dumpFilename string, logger log.Logger) error {
+	if mapper.FSM == nil {
+		return fmt.Errorf("no FSM available to be dumped, possibly because the mapping contains regex patterns")
+	}
 	f, err := os.Create(dumpFilename)
 	if err != nil {
 		return err
 	}
-	log.Infoln("Start dumping FSM to", dumpFilename)
+	level.Info(logger).Log("msg", "Start dumping FSM", "to", dumpFilename)
 	w := bufio.NewWriter(f)
 	mapper.FSM.DumpFSM(w)
 	w.Flush()
 	f.Close()
-	log.Infoln("Finish dumping FSM")
+	level.Info(logger).Log("msg", "Finish dumping FSM")
 	return nil
 }
 
 func main() {
-	log.AddFlags(kingpin.CommandLine)
+	promlogConfig := &promlog.Config{}
+	flag.AddFlags(kingpin.CommandLine, promlogConfig)
 	kingpin.Version(version.Print("graphite_exporter"))
 	kingpin.HelpFlag.Short('h')
 	kingpin.Parse()
+	logger := promlog.New(promlogConfig)
 
 	prometheus.MustRegister(sampleExpiryMetric)
 	sampleExpiryMetric.Set(sampleExpiry.Seconds())
 
-	log.Infoln("Starting graphite_exporter", version.Info())
-	log.Infoln("Build context", version.BuildContext())
+	level.Info(logger).Log("msg", "Starting graphite_exporter", "version_info", version.Info())
+	level.Info(logger).Log("build_context", version.BuildContext())
 
 	http.Handle(*metricsPath, promhttp.Handler())
-	c := newGraphiteCollector()
+	c := newGraphiteCollector(logger)
 	prometheus.MustRegister(c)
 
 	c.mapper = &mapper.MetricMapper{}
 	if *mappingConfig != "" {
-		err := c.mapper.InitFromFile(*mappingConfig)
+		err := c.mapper.InitFromFile(*mappingConfig, *cacheSize)
 		if err != nil {
-			log.Fatalf("Error loading metric mapping config: %s", err)
+			level.Error(logger).Log("msg", "Error loading metric mapping config", "err", err)
+			os.Exit(1)
 		}
+	} else {
+		c.mapper.InitCache(0)
 	}
 
 	if *dumpFSMPath != "" {
-		err := dumpFSM(c.mapper.(*mapper.MetricMapper), *dumpFSMPath)
+		err := dumpFSM(c.mapper.(*mapper.MetricMapper), *dumpFSMPath, logger)
 		if err != nil {
-			log.Fatal("Error dumping FSM:", err)
+			level.Error(logger).Log("msg", "Error dumping FSM", "err", err)
+			os.Exit(1)
 		}
 	}
 
 	tcpSock, err := net.Listen("tcp", *graphiteAddress)
 	if err != nil {
-		log.Fatalf("Error binding to TCP socket: %s", err)
+		level.Error(logger).Log("msg", "Error binding to TCP socket", "err", err)
+		os.Exit(1)
 	}
 	go func() {
 		for {
 			conn, err := tcpSock.Accept()
 			if err != nil {
-				log.Errorf("Error accepting TCP connection: %s", err)
+				level.Error(logger).Log("msg", "Error accepting TCP connection", "err", err)
 				continue
 			}
 			go func() {
@@ -290,11 +311,13 @@ func main() {
 
 	udpAddress, err := net.ResolveUDPAddr("udp", *graphiteAddress)
 	if err != nil {
-		log.Fatalf("Error resolving UDP address: %s", err)
+		level.Error(logger).Log("msg", "Error resolving UDP address", "err", err)
+		os.Exit(1)
 	}
 	udpSock, err := net.ListenUDP("udp", udpAddress)
 	if err != nil {
-		log.Fatalf("Error listening to UDP address: %s", err)
+		level.Error(logger).Log("msg", "Error listening to UDP address", "err", err)
+		os.Exit(1)
 	}
 	go func() {
 		defer udpSock.Close()
@@ -302,7 +325,7 @@ func main() {
 			buf := make([]byte, 65536)
 			chars, srcAddress, err := udpSock.ReadFromUDP(buf)
 			if err != nil {
-				log.Errorf("Error reading UDP packet from %s: %s", srcAddress, err)
+				level.Error(logger).Log("msg", "Error reading UDP packet", "from", srcAddress, "err", err)
 				continue
 			}
 			go c.processReader(bytes.NewReader(buf[0:chars]))
@@ -324,6 +347,7 @@ func main() {
       </html>`))
 	})
 
-	log.Infoln("Listening on", *listenAddress)
-	log.Fatal(http.ListenAndServe(*listenAddress, nil))
+	level.Info(logger).Log("msg", "Listening on "+*listenAddress)
+	level.Error(logger).Log("err", http.ListenAndServe(*listenAddress, nil))
+	os.Exit(1)
 }

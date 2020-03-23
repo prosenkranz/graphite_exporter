@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"testing"
 
+	"github.com/go-kit/kit/log"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/statsd_exporter/pkg/mapper"
 	"github.com/stretchr/testify/assert"
@@ -38,10 +39,12 @@ func (m *mockMapper) GetMapping(metricName string, metricType mapper.MetricType)
 
 }
 
-func (m *mockMapper) InitFromFile(string) error {
+func (m *mockMapper) InitFromFile(string, int) error {
 	return nil
 }
+func (m *mockMapper) InitCache(int) {
 
+}
 func TestProcessLine(t *testing.T) {
 
 	type testCase struct {
@@ -119,7 +122,7 @@ func TestProcessLine(t *testing.T) {
 		},
 	}
 
-	c := newGraphiteCollector()
+	c := newGraphiteCollector(log.NewNopLogger())
 
 	for _, testCase := range testCases {
 
