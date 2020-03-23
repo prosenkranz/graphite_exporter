@@ -128,12 +128,18 @@ func (c *graphiteCollector) processLines() {
 func (c *graphiteCollector) processLine(line string) {
 	line = strings.TrimSpace(line)
 	level.Debug(c.logger).Log("msg", "Incoming line", "line", line)
-	parts := strings.Split(line, " ")
-	if len(parts) != 3 {
+
+	// Metric path may contain spaces
+	lineRegex := regexp.MustCompile(`(.+) ([^ ]+) ([^ ]+)`)
+	parts := lineRegex.FindStringSubmatch(line)
+	if (len(parts) - 1) != 3 {
 		level.Info(c.logger).Log("msg", "Invalid part count", "parts", len(parts), "line", line)
 		return
 	}
+
+	parts = parts[1:]
 	originalName := parts[0]
+
 	var name string
 	mapping, labels, present := c.mapper.GetMapping(originalName, mapper.MetricTypeGauge)
 

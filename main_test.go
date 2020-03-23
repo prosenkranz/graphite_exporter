@@ -15,6 +15,7 @@ package main
 
 import (
 	"strings"
+	"regexp"
 	"testing"
 
 	"github.com/go-kit/kit/log"
@@ -113,6 +114,12 @@ func TestProcessLine(t *testing.T) {
 			willFail: true,
 			strict:   true,
 		},
+		{
+			line:     "my.mapped.metric.with spaces;and=tags 42 1534620625 ",
+			name:     "my_mapped_metric_with_spaces_and_tags",
+			present:  true,
+			value:    float64(42),
+		},
 	}
 
 	c := newGraphiteCollector(log.NewNopLogger())
@@ -139,8 +146,16 @@ func TestProcessLine(t *testing.T) {
 
 	c.sampleCh <- nil
 	for _, k := range testCases {
-		originalName := strings.Split(k.line, " ")[0]
-		sample := c.samples[originalName]
+		var sample *graphiteSample
+		lineRegex := regexp.MustCompile(`(.+) ([^ ]+) ([^ ]+)`)
+		parts := lineRegex.FindStringSubmatch(strings.TrimSpace(k.line))
+		if len(parts) > 0 {
+			originalName := parts[1]
+			sample = c.samples[originalName]
+		} else {
+			sample = nil
+		}
+
 		if k.willFail {
 			assert.Nil(t, sample, "Found %s", k.name)
 		} else {
